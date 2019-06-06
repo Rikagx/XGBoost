@@ -51,3 +51,23 @@ pred <- predict(model1, dtest)
 err <- mean(as.numeric(pred > 0.5) != test_labels)
 print(paste("test-error=", err))
 
+
+params <- list(booster = "gbtree",
+               objective = "binary:logistic",
+               eta=0.3,
+               gamma=0,
+               max_depth=6,
+               min_child_weight=1,
+               subsample=1,
+               colsample_bytree=1)
+
+xgbcv <- xgb.cv(params = params,
+                data = dtrain,
+                label = train_labels,
+                nrounds = 200,
+                nfold = 5,
+                showsd = T,
+                stratified = T,
+                print_every_n = 10,
+                early_stop_rounds = 20,
+                maximize = F)

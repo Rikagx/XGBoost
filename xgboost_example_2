@@ -6,7 +6,7 @@ library(xgboost)
 library(inspectdf)
 
 
-#####Part 3: Modeling
+###csv data for this model is unfortunately not publicly available
 
 training <- read_csv("training_set_data.csv", col_names = TRUE) %>% clean_names()
 
@@ -249,58 +249,4 @@ y_pred4 <- predict(model3,testing_matrix)
 
 write_csv(as.data.frame(y_pred4), "predictions.csv", col_names = F)
 
-####################################################################################
-##Addendum
 
-other2 <- read_csv("other2.csv", col_names = TRUE) # religions lumped as "Other" in Training
-
-##select correct order of columns so model and testing matrixes have the same columns
-
-int <- as.data.frame(testing_matrix) %>% select("age",
-                                                "weekly_hours_worked",
-                                                "total_income",
-                                                "race_native_american",
-                                                "race_asian",
-                                                "race_black",
-                                                "race_native_hawaiian",
-                                                "race_pacific_islander",
-                                                "race_white",
-                                                "race_other",
-                                                "citizen_statuscitizen_birth",
-                                                "citizen_statuscitizen_naturalized",
-                                                "citizen_statusnoncitizen",
-                                                "nativity_statusforeign_born",
-                                                "nativity_statusnative_born",
-                                                "marital_statusdivorced",
-                                                "marital_statusmarried",
-                                                "marital_statusnever_married",
-                                                "marital_statusseparated",
-                                                "marital_statuswidowed",
-                                                "school_statusnot_student",
-                                                "school_statusprivate_school",
-                                                "school_statuspublic_school",
-                                                "sexFemale",
-                                                "sexMale",
-                                                "when_last_workedin_last_five_years",
-                                                "when_last_workedin_last_year",
-                                                "when_last_workedover_five_years_ago",
-                                                "worked_last_weekdid_not_work",
-                                                "worked_last_weeknot_reported",
-                                                "worked_last_weekworked",
-                                                "languageArabic",
-                                                "languageChinese",
-                                                "languageEnglish",
-                                                "languageFrench",
-                                                "languageGerman",
-                                                "languageGreek",
-                                                "languageGujarati",
-                                                "languageHindi",
-                                                "languageItalian",
-                                                "languageKorean",
-                                                "languagePolish",
-                                                "languageRussian",
-                                                "languageSpanish",
-                                                "languageTagalog",
-                                                "languageUrdu",
-                                                "languageOther")
-#####################################################################################

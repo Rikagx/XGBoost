@@ -1,0 +1,306 @@
+library(tidyverse)
+library(readxl)
+library(here)
+library(janitor)
+library(xgboost)
+library(inspectdf)
+
+
+#####Part 3: Modeling
+
+training <- read_csv("training_set_data.csv", col_names = TRUE) %>% clean_names()
+
+# Clean sex column
+
+training <- training %>% mutate(sex = case_when(
+  sex == "F" ~ "Female",
+  sex == "female" ~ "Female",
+  sex == "FEMALE" ~ "Female",
+  sex == "M" ~ "Male",
+  sex == "male" ~ "Male",
+  sex == "MALE" ~ "Male",
+  TRUE ~ sex
+))
+
+# Transform character columns to factors
+
+training <- training %>%
+  mutate_if(is.character, as.factor)
+
+# Inspect our df
+
+inspect_types(training)
+inspect_mem(training)
+inspect_na(training, show_plot = TRUE) #No missing data!
+inspect_cat(training) #Language has too many levels, so we should clean that up
+
+# Inspect correlations
+
+corr <- inspect_cor(training) #no sig corrs between uninsured variable and other variables :(
+
+training %>% group_by(language) %>% count() %>% arrange(desc(n)) %>% head(20)
+
+# lump language into top 15 languages and "Other"
+training <- training %>%
+  mutate(language = fct_lump(language, n = 15, other_level = "Other"))
+
+# Remove target variable from training data
+
+training_notarget <- training %>% select(-uninsured)
+
+# Remove unnecessary information
+
+training_notarget <- training_notarget %>%
+  select(-c(self_employed_income, wage_income, interest_income, other_income)) %>% #these are all correlated with total income and are redundant
+  select(-c(person_id, household_id)) #do not add to model, want to reduce noise
+
+# Create numeric only matrix for XGBoost algorithm
+
+training_numeric <- training_notarget %>% select_if(is.numeric)
+
+# Convert categoricals into numeric sparse matrices using one hot encoding
+
+options(na.action='na.pass')
+
+citizen_status <- model.matrix(~citizen_status-1, training_notarget)
+nativity_status <- model.matrix(~nativity_status-1, training_notarget)
+marital_status <- model.matrix(~marital_status-1, training_notarget)
+school_status <- model.matrix(~school_status-1, training_notarget)
+sex <- model.matrix(~sex-1, training_notarget)
+when_last_worked <- model.matrix(~when_last_worked-1, training_notarget)
+worked_last_week <- model.matrix(~worked_last_week-1, training_notarget)
+language <- model.matrix(~language-1, training_notarget)
+
+
+# Combine matrices
+
+training_matrix <- cbind(data.matrix(training_numeric), citizen_status, nativity_status, marital_status, school_status, sex, when_last_worked, worked_last_week, language)
+
+
+# Create a label boolean vector with our target variable
+
+try <- training %>% mutate(uninsured = ifelse(uninsured == "0", NA, "1"))
+try <- try %>% mutate(uninsured = as.numeric(uninsured))
+
+xLabels <- try %>%
+  select(uninsured) %>%
+  is.na() %>%
+  magrittr::not()
+
+
+# Split training data into additional train and test sets
+
+set.seed(42)
+
+sample_num <- round(length(xLabels) * .7)
+
+train_data_uninsured <- training_matrix[1:sample_num,]
+train_labels_uninsured <- xLabels[1:sample_num]
+
+test_data_unisured <- training_matrix[-(1:sample_num),]
+test_labels_uninsured <- xLabels[-(1:sample_num)]
+
+# Train baseline model
+
+model1 <- xgboost(data = train_data_uninsured,
+                  label = train_labels_uninsured,
+                  nround = 2,
+                  objective = "binary:logistic")
+
+#train-error:0.074308
+
+# Generate predictions and error for model1
+
+y_pred <- predict(model1,test_data_unisured)
+
+err <- mean(as.numeric(y_pred > 0.5) != test_labels_uninsured)
+print(paste("test-error=", err))
+
+#test-error: 0.0755075787236423
+
+#Parameter Tuning
+
+model2 <- xgboost(data = train_data_uninsured,
+                  label = train_labels_uninsured,
+                  max.depth = 6,
+                  nround = 10,
+                  objective = "binary:logistic",
+                  eta = 0.3,
+                  gamma = 0,
+                  min_child_weight=1,
+                  subsample=1,
+                  colsample_bytree=1)
+
+#train-error: 0.072415
+
+y_pred2 <- predict(model2,test_data_unisured)
+
+err <- mean(as.numeric(y_pred2 > 0.5) != test_labels_uninsured)
+print(paste("test-error=", err))
+
+#test-error: 0.075451647183847
+
+# Cross-Validation
+
+params <- list(booster = "gbtree",
+               objective = "binary:logistic",
+               eta=0.3,
+               gamma=0,
+               max_depth=6,
+               min_child_weight=1,
+               subsample=1,
+               colsample_bytree=1)
+
+xgbcv <- xgb.cv(params = params,
+                data = train_data_uninsured,
+                label = train_labels_uninsured,
+                nrounds = 100,
+                nfold = 5,
+                showsd = T,
+                stratified = T,
+                print_every_n = 10,
+                early_stop_rounds = 20,
+                maximize = F)
+
+#Best stopping point is 12 rounds, after which test-error starts increasing
+
+print(xgbcv, verbose = TRUE)
+
+model3 <- xgboost(data = train_data_uninsured,
+                  label = train_labels_uninsured,
+                  max.depth = 6,
+                  nround = 12,
+                  objective = "binary:logistic",
+                  eta = 0.3,
+                  gamma = 1,
+                  min_child_weight=1,
+                  subsample=1,
+                  colsample_bytree=1,
+                  nfold = 5,
+                  showsd = T,
+                  stratified = T,
+                  print_every_n = 10,
+                  early_stop_rounds = 20,
+                  maximize = F)
+
+#train-error: 0.072750
+
+y_pred3 <- predict(model3,test_data_unisured)
+
+err <- mean(as.numeric(y_pred3 > 0.5) != test_labels_uninsured)
+print(paste("test-error=", err))
+
+#test-error: 0.0753957156440517 lowest error so far!
+
+# Interpretation
+
+xgb.plot.multi.trees(feature_names = names(training_matrix), model = model3, fill = TRUE)
+
+importance_matrix <- xgb.importance(names(training_matrix), model = model3)
+
+xgb.plot.importance(importance_matrix)
+
+
+#most important features where whether individual was non-citizen, what their total income was,whether they were female, spoke spanish, race = Other
+
+#####################Deploy model on new dataset########################################
+
+testing <- read_csv("unlabeled_data.csv", col_names = TRUE) %>% clean_names()
+
+testing <- testing %>% mutate(sex = case_when(
+  sex == "F" ~ "Female",
+  sex == "female" ~ "Female",
+  sex == "FEMALE" ~ "Female",
+  sex == "M" ~ "Male",
+  sex == "male" ~ "Male",
+  sex == "MALE" ~ "Male",
+  TRUE ~ sex
+))
+
+testing <- testing %>%
+  mutate(language = case_when(language %in% other2$language_other ~"Other",
+                              TRUE ~ language))
+
+testing <- testing %>%
+  mutate_if(is.character, as.factor)
+
+testing_notarget <- testing %>%
+  select(-c(self_employed_income, wage_income, interest_income, other_income)) %>% #these are all correlated with total income and are redundant
+  select(-c(household_id, person_id)) #keep person_id in testing set
+
+testing_numeric <- testing_notarget %>% select_if(is.numeric)
+
+options(na.action='na.pass')
+
+citizen_status_test <- model.matrix(~citizen_status-1, testing_notarget)
+nativity_status_test <- model.matrix(~nativity_status-1, testing_notarget)
+marital_status_test <- model.matrix(~marital_status-1, testing_notarget)
+school_status_test <- model.matrix(~school_status-1, testing_notarget)
+sex_test <- model.matrix(~sex-1, testing_notarget)
+when_last_worked_test <- model.matrix(~when_last_worked-1, testing_notarget)
+worked_last_week_test <- model.matrix(~worked_last_week-1, testing_notarget)
+language_test <- model.matrix(~language-1, testing_notarget)
+
+testing_matrix <- cbind(data.matrix(testing_numeric), citizen_status_test, nativity_status_test, marital_status_test, school_status_test, sex_test, when_last_worked_test, worked_last_week_test, language_test)
+
+testing_matrix <- data.matrix(int)
+
+y_pred4 <- predict(model3,testing_matrix)
+
+write_csv(as.data.frame(y_pred4), "predictions.csv", col_names = F)
+
+####################################################################################
+##Addendum
+
+other2 <- read_csv("other2.csv", col_names = TRUE) # religions lumped as "Other" in Training
+
+##select correct order of columns so model and testing matrixes have the same columns
+
+int <- as.data.frame(testing_matrix) %>% select("age",
+                                                "weekly_hours_worked",
+                                                "total_income",
+                                                "race_native_american",
+                                                "race_asian",
+                                                "race_black",
+                                                "race_native_hawaiian",
+                                                "race_pacific_islander",
+                                                "race_white",
+                                                "race_other",
+                                                "citizen_statuscitizen_birth",
+                                                "citizen_statuscitizen_naturalized",
+                                                "citizen_statusnoncitizen",
+                                                "nativity_statusforeign_born",
+                                                "nativity_statusnative_born",
+                                                "marital_statusdivorced",
+                                                "marital_statusmarried",
+                                                "marital_statusnever_married",
+                                                "marital_statusseparated",
+                                                "marital_statuswidowed",
+                                                "school_statusnot_student",
+                                                "school_statusprivate_school",
+                                                "school_statuspublic_school",
+                                                "sexFemale",
+                                                "sexMale",
+                                                "when_last_workedin_last_five_years",
+                                                "when_last_workedin_last_year",
+                                                "when_last_workedover_five_years_ago",
+                                                "worked_last_weekdid_not_work",
+                                                "worked_last_weeknot_reported",
+                                                "worked_last_weekworked",
+                                                "languageArabic",
+                                                "languageChinese",
+                                                "languageEnglish",
+                                                "languageFrench",
+                                                "languageGerman",
+                                                "languageGreek",
+                                                "languageGujarati",
+                                                "languageHindi",
+                                                "languageItalian",
+                                                "languageKorean",
+                                                "languagePolish",
+                                                "languageRussian",
+                                                "languageSpanish",
+                                                "languageTagalog",
+                                                "languageUrdu",
+                                                "languageOther")
+#####################################################################################
